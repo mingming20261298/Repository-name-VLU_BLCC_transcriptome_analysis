@@ -1,0 +1,323 @@
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(tidyr); library(stringr)
+  library(ggplot2); library(ggrepel)
+  library(pheatmap); library(RColorBrewer); library(patchwork)
+})
+
+# ---------- ensure annotation packages for probe->gene ----------
+if(!requireNamespace("BiocManager", quietly=TRUE)) {
+  install.packages("BiocManager", repos="https://cloud.r-project.org")
+}
+if(!requireNamespace("AnnotationDbi", quietly=TRUE)) {
+  BiocManager::install("AnnotationDbi", update=FALSE, ask=FALSE)
+}
+if(!requireNamespace("hgu133plus2.db", quietly=TRUE)) {
+  BiocManager::install("hgu133plus2.db", update=FALSE, ask=FALSE)
+}
+
+suppressPackageStartupMessages({
+  library(AnnotationDbi); library(hgu133plus2.db)
+  library(dplyr)
+})
+
+# ---- paths ----
+res_f  <- "~/JTM_GSE84571/results/Table_interaction_all.csv"
+meta_f <- "~/JTM_GSE84571/data/sample_sheet.csv"
+f_rma  <- "~/JTM_GSE84571/data/GSE84571_expr_rma_log2.csv"
+f_mas5 <- "~/JTM_GSE84571/data/GSE84571_expr_mas5_log2.csv"
+expr_f <- if (file.exists(f_rma)) f_rma else if (file.exists(f_mas5)) f_mas5 else NA
+
+if(!file.exists(res_f))  stop("Missing: ", res_f)
+if(!file.exists(meta_f)) stop("Missing: ", meta_f)
+if(is.na(expr_f)) stop("Missing expression matrix: ", f_rma, " or ", f_mas5)
+
+dir.create("~/JTM_GSE84571/figs", showWarnings=FALSE, recursive=TRUE)
+
+# ---- helpers ----
+pick <- function(df, cands){
+  hit <- cands[cands %in% colnames(df)]
+  if(length(hit)==0) NA_character_ else hit[1]
+}
+as_num <- function(x) suppressWarnings(as.numeric(as.character(x)))
+
+# =========================
+# 1) Read interaction results
+# =========================
+tab <- read_csv(res_f, show_col_types=FALSE, progress=FALSE)
+
+logfc_col <- pick(tab, c("logFC","log2FC","log2FoldChange"))
+fdr_col   <- pick(tab, c("adj.P.Val","FDR","padj"))
+p_col     <- pick(tab, c("P.Value","pvalue","pval"))
+probe_col <- pick(tab, c("probe_id","ProbeID","ID","probe","PROBEID","...1","X"))
+
+if(any(is.na(c(logfc_col,fdr_col,probe_col)))) {
+  stop("Result table must contain logFC, adj.P.Val(FDR), and probe_id columns. Found: ",
+       paste(colnames(tab), collapse=", "))
+}
+
+tab2 <- tab %>%
+  transmute(
+    probe = as.character(.data[[probe_col]]),
+    logFC = as_num(.data[[logfc_col]]),
+    FDR   = as_num(.data[[fdr_col]]),
+    PVAL  = if(!is.na(p_col)) as_num(.data[[p_col]]) else NA_real_
+  ) %>%
+  filter(!is.na(logFC), !is.na(FDR))
+
+# =========================
+# 2) probe -> gene symbol mapping (GPL570)
+# =========================
+
+# ---- robust probe -> gene symbol mapping (GPL570 / hgu133plus2.db) ----
+keytype_use <- "PROBEID"
+raw_map <- AnnotationDbi::select(
+  hgu133plus2.db,
+  keys     = unique(tab2$probe),
+  columns  = c("SYMBOL"),
+  keytype  = keytype_use
+) %>% as.data.frame()
+
+# key column name is sometimes not exactly "PROBEID" depending on backend; handle robustly
+key_col <- keytype_use
+if(!(key_col %in% colnames(raw_map))) {
+  # fallback: first column usually is the key column
+  key_col <- colnames(raw_map)[1]
+}
+
+map <- raw_map %>%
+  as_tibble() %>%
+  transmute(
+    probe  = as.character(.data[[key_col]]),
+    SYMBOL = as.character(SYMBOL)
+  ) %>%
+  filter(!is.na(SYMBOL), SYMBOL!="") %>%
+  distinct(probe, .keep_all=TRUE)
+
+
+tab2 <- tab2 %>%
+  left_join(map, by="probe") %>%
+  mutate(
+    gene = ifelse(is.na(SYMBOL) | SYMBOL=="", NA_character_, SYMBOL),
+    neglogFDR = -log10(pmax(FDR, 1e-300))
+  )
+
+# =========================
+# 3) Panel A: Volcano (Up/Down coloring + label top gene SYMBOL only)
+# =========================
+FDR_TH <- 0.10
+LFC_TH <- 0.50
+TOP_N  <- 12
+
+tab2 <- tab2 %>%
+  mutate(
+    sig = (FDR < FDR_TH) & (abs(logFC) >= LFC_TH),
+    direction = case_when(
+      sig & logFC > 0 ~ "Up",
+      sig & logFC < 0 ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+# label top genes among significant, by |logFC| then FDR, unique by gene
+lab_df <- tab2 %>%
+  filter(sig, !is.na(gene)) %>%
+  arrange(desc(abs(logFC)), FDR) %>%
+  distinct(gene, .keep_all=TRUE) %>%
+  slice_head(n=TOP_N)
+
+pA <- ggplot(tab2, aes(x=logFC, y=neglogFDR)) +
+  geom_point(aes(color=direction), size=1.35, alpha=0.85) +
+  geom_vline(xintercept=c(-LFC_TH, LFC_TH), linetype="dashed", linewidth=0.45) +
+  geom_hline(yintercept=-log10(FDR_TH), linetype="dashed", linewidth=0.45) +
+  ggrepel::geom_text_repel(
+    data=lab_df,
+    aes(label=gene),
+    size=3.1,
+    max.overlaps=Inf,
+    box.padding=0.35,
+    point.padding=0.25,
+    min.segment.length=0,
+    seed=1
+  ) +
+  scale_color_manual(values=c(Up="#D94841", Down="#2B8CBE", NS="grey70")) +
+  theme_classic() +
+  theme(
+    legend.title = element_blank(),
+    plot.title = element_blank()
+  ) +
+  labs(x="Interaction effect (log2FC, ΔBLCC − ΔControl)", y="-log10(FDR)")
+
+# =========================
+# 4) Read expression + metadata (for heatmap + delta waterfall)
+# =========================
+expr <- read_csv(expr_f, show_col_types=FALSE, progress=FALSE)
+id_col <- colnames(expr)[1]
+expr[-1] <- lapply(expr[-1], as_num)
+mat <- as.matrix(expr[,-1])
+rownames(mat) <- as.character(expr[[id_col]])
+mat <- mat[, colSums(!is.na(mat))>0, drop=FALSE]
+
+meta <- read_csv(meta_f, show_col_types=FALSE, progress=FALSE)
+sample_col  <- pick(meta, c("sample","Sample","sample_id","SampleID","gsm","GSM"))
+arm_col     <- pick(meta, c("arm","Arm","group","Group","treatment","Treatment"))
+time_col    <- pick(meta, c("time","Time","week","Week","timepoint","Timepoint"))
+patient_col <- pick(meta, c("patient","Patient","subject","Subject","id","ID"))
+
+if(any(is.na(c(sample_col,arm_col,time_col,patient_col)))) {
+  stop("sample_sheet.csv must contain sample/arm/time/patient columns. Found: ",
+       paste(colnames(meta), collapse=", "))
+}
+
+meta2 <- meta %>%
+  transmute(
+    sample  = as.character(.data[[sample_col]]),
+    arm     = as.character(.data[[arm_col]]),
+    time    = as.character(.data[[time_col]]),
+    patient = as.character(.data[[patient_col]])
+  ) %>%
+  filter(sample %in% colnames(mat)) %>%
+  mutate(
+    time2 = tolower(time),
+    time2 = str_replace_all(time2, "week", "w"),
+    time2 = ifelse(time2 %in% c("0","w0","week0"), "w0", time2),
+    time2 = ifelse(time2 %in% c("1","w1","week1"), "w1", time2),
+    grp = paste0(arm, "_", time2)
+  )
+
+meta_ord <- meta2 %>% arrange(arm, time2, patient, sample)
+mat_ord <- mat[, meta_ord$sample, drop=FALSE]
+
+# =========================
+# 5) Panel B: Heatmap Top 50 probes (arm/time separators)
+# =========================
+topN <- 50
+top_probes <- tab2 %>%
+  arrange(FDR, desc(abs(logFC))) %>%
+  filter(probe %in% rownames(mat_ord)) %>%
+  slice_head(n=topN) %>%
+  pull(probe)
+
+if(length(top_probes) < 10) {
+  stop("Too few probes found in expression matrix rownames. ",
+       "Check expression rows are probe IDs and match probe_id in interaction table.")
+}
+
+hm <- mat_ord[top_probes, , drop=FALSE]
+hm_z <- t(scale(t(hm)))
+hm_z[is.na(hm_z)] <- 0
+
+ann <- meta_ord %>%
+  transmute(arm=as.character(arm), time=as.character(time2)) %>%
+  as.data.frame()
+rownames(ann) <- meta_ord$sample
+
+arm_levels <- unique(meta_ord$arm)
+time_levels <- unique(meta_ord$time2)
+arm_cols <- setNames(colorRampPalette(brewer.pal(8,"Set2"))(length(arm_levels)), arm_levels)
+time_cols <- setNames(colorRampPalette(brewer.pal(8,"Pastel1"))(length(time_levels)), time_levels)
+
+grp_blocks <- meta_ord %>% mutate(block=paste0(arm,"_",time2))
+gaps <- cumsum(table(grp_blocks$block))
+
+ph <- pheatmap(
+  hm_z,
+  annotation_col = ann,
+  annotation_colors = list(arm=arm_cols, time=time_cols),
+  show_colnames = FALSE,
+  show_rownames = FALSE,
+  cluster_cols = FALSE,
+  cluster_rows = TRUE,
+  border_color = NA,
+  gaps_col = gaps
+)
+pB <- patchwork::wrap_elements(ph[[4]])
+
+# =========================
+# 6) Panel C: patient-level Δ waterfall (week1 - week0) using a simple signature
+#     signature = mean(z(up genes)) - mean(z(down genes))
+# =========================
+# define up/down sets based on interaction sign among significant & mapped genes
+sig_gene <- tab2 %>%
+  filter(FDR < FDR_TH, abs(logFC) >= LFC_TH, !is.na(gene)) %>%
+  group_by(gene) %>%
+  summarize(logFC = mean(logFC, na.rm=TRUE), .groups="drop")
+
+up_genes   <- sig_gene %>% filter(logFC > 0) %>% pull(gene) %>% unique()
+down_genes <- sig_gene %>% filter(logFC < 0) %>% pull(gene) %>% unique()
+
+# map probes->gene and collapse expression to gene (median across probes)
+probe2gene <- map %>% dplyr::select(probe, SYMBOL) %>% dplyr::rename(gene=SYMBOL)
+
+long_g <- as.data.frame(mat) %>%
+  tibble::rownames_to_column("probe") %>%
+  inner_join(probe2gene, by="probe") %>%
+  filter(gene %in% unique(c(up_genes, down_genes))) %>%
+  pivot_longer(-c(probe,gene), names_to="sample", values_to="expr") %>%
+  mutate(expr = as_num(expr)) %>%
+  group_by(gene, sample) %>%
+  summarize(expr_g = median(expr, na.rm=TRUE), .groups="drop") %>%
+  group_by(gene) %>%
+  mutate(z = (expr_g - mean(expr_g, na.rm=TRUE)) / sd(expr_g, na.rm=TRUE)) %>%
+  ungroup()
+
+if(length(up_genes) < 2 || length(down_genes) < 2) {
+  stop("Too few mapped significant up/down genes for delta waterfall. ",
+       "Try loosening thresholds: increase FDR_TH or lower LFC_TH.")
+}
+
+score_df <- long_g %>%
+  mutate(set = case_when(
+    gene %in% up_genes ~ "up",
+    gene %in% down_genes ~ "down",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(set)) %>%
+  group_by(sample, set) %>%
+  summarize(m = mean(z, na.rm=TRUE), .groups="drop") %>%
+  pivot_wider(names_from=set, values_from=m) %>%
+  mutate(signature = up - down) %>%
+  dplyr::select(sample, signature)
+
+delta_df <- meta2 %>%
+  left_join(score_df, by="sample") %>%
+  filter(!is.na(signature), time2 %in% c("w0","w1")) %>%
+  dplyr::select(patient, arm, time2, signature) %>%
+  pivot_wider(names_from=time2, values_from=signature) %>%
+  filter(!is.na(w0), !is.na(w1)) %>%
+  mutate(delta = w1 - w0)
+
+write_csv(delta_df, "~/JTM_GSE84571/figs/Fig3C_patientDelta_table.csv")
+
+# sort within arm (blocky, clinical)
+delta_df2 <- delta_df %>%
+  group_by(arm) %>%
+  arrange(desc(delta), .by_group=TRUE) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  mutate(x = paste0(arm, "_", rank))
+
+pC <- ggplot(delta_df2, aes(x=reorder(x, delta), y=delta, fill=arm)) +
+  geom_col(width=0.85) +
+  geom_hline(yintercept=0, linewidth=0.45) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    plot.title = element_blank()
+  ) +
+  labs(x="Patients (sorted within arm)", y="Δ signature (week1 - week0)")
+
+# =========================
+# Assemble Fig 3
+# =========================
+fig <- (pA | pB) / pC +
+  plot_layout(heights=c(1, 0.85), widths=c(1, 1.15))
+
+ggsave("~/JTM_GSE84571/figs/Fig3_interaction_new.pdf", fig, width=13, height=9, device=cairo_pdf)
+ggsave("~/JTM_GSE84571/figs/Fig3_interaction_new.png", fig, width=13, height=9, dpi=300)
+
+message("✅ Saved:",
+        "\n - ~/JTM_GSE84571/figs/Fig3_interaction_new.pdf",
+        "\n - ~/JTM_GSE84571/figs/Fig3_interaction_new.png",
+        "\n - ~/JTM_GSE84571/figs/Fig3C_patientDelta_table.csv")

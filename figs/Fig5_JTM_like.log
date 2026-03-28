@@ -1,0 +1,25 @@
+▶ patient-level delta mode: TRUE 
+Warning messages:
+1: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  conversion failure on 'Δ score (week1 − week0)' in 'mbcsToSbcs': for Δ (U+0394)
+2: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  for 'Δ score (week1 − week0)' in 'mbcsToSbcs': - substituted for − (U+2212)
+3: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  conversion failure on 'Δ score (week1 − week0)' in 'mbcsToSbcs': for Δ (U+0394)
+4: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  for 'Δ score (week1 − week0)' in 'mbcsToSbcs': - substituted for − (U+2212)
+5: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  conversion failure on 'Δ score (week1 − week0)' in 'mbcsToSbcs': for Δ (U+0394)
+6: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  for 'Δ score (week1 − week0)' in 'mbcsToSbcs': - substituted for − (U+2212)
+7: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  for 'DiD effect (BLCC − Control)' in 'mbcsToSbcs': - substituted for − (U+2212)
+8: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  conversion failure on 'Δ(week1−week0): BLCC − Control' in 'mbcsToSbcs': for Δ (U+0394)
+9: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  for 'Δ(week1−week0): BLCC − Control' in 'mbcsToSbcs': - substituted for − (U+2212)
+10: In grid.Call.graphics(C_text, as.graphicsAnnot(x$label), x$x, x$y,  :
+  for 'Δ(week1−week0): BLCC − Control' in 'mbcsToSbcs': - substituted for − (U+2212)
+✅ Saved:
+  figs/Fig5_JTM_like.pdf
+  figs/Fig5_JTM_like.png
