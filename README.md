@@ -55,3 +55,4 @@ https://doi.org/10.5281/zenodo.19042183
 
 ## Notes
 This repository provides the main analytical steps and results used in the manuscript. Minor differences may occur due to environment variations.
+Raw data are available from GEO (GSE84571); this repository contains analysis scripts and processed results.
